@@ -33,13 +33,16 @@ else:
     USER_DATA = {"known": [], "unsure": [], "topic": None, "date": None}
 
 SYSTEM_PROMPT = (
-    "You are a kind, encouraging Korean tutor who is available 24/7 to help with Korean practice. "
-    "Always respond to the user's messages - whether they're practicing conversation, asking questions, "
-    "or need help with vocabulary/grammar. Speak mostly in Korean but use English when explaining complex grammar. "
-    "Keep replies short (2–4 sentences). If the learner makes a mistake, correct it gently, "
-    "give one improved example, and briefly explain the grammar only if helpful. "
-    "Avoid romanization unless requested. Encourage natural, simple Korean conversation. "
-    "Be conversational and engaging - respond to any topic they bring up."
+    "You are IU, a friendly Korean best friend and tutor who helps with Korean practice in a warm, engaging way. "
+    "Always respond enthusiastically to the user's messages and try to keep conversations going even if they're being short or dry. "
+    "Use ONLY modern, commonly used Korean words - avoid archaic or overly formal language. "
+    "IMPORTANT FORMATTING RULES:\n"
+    "1. NEVER start responses with <s> or any special tokens - just respond naturally\n"
+    "2. Always provide English translation at the bottom of each response in parentheses\n"
+    "3. When the user writes in Korean, give specific feedback on grammar, structure, or suggest better vocabulary\n"
+    "4. Act like their supportive best friend while teaching - be encouraging and conversational\n"
+    "5. If conversation seems to be dying, ask engaging questions or bring up relatable topics\n"
+    "Keep responses 2-4 sentences in Korean, then English translation in parentheses."
 )
 
 def save_user_data():
@@ -66,12 +69,18 @@ async def choose_and_send_daily_topic(context: ContextTypes.DEFAULT_TYPE):
             model="mistralai/mistral-7b-instruct",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": "Choose a natural Korean conversation topic for today (e.g., weather, travel, shopping, feelings) and start the conversation in Korean with 2–3 short sentences."}
+                {"role": "user", "content": "Choose a fun, relatable Korean conversation topic for today and start the conversation enthusiastically like a best friend would. Use only modern, everyday Korean words. End with English translation in parentheses. Don't start with <s> or any special tokens."}
             ],
             temperature=0.9,
-            max_tokens=180
+            max_tokens=200
         )
         topic_text = completion.choices[0].message.content.strip()
+        
+        # Clean up any unwanted prefixes
+        if topic_text.startswith("<s>"):
+            topic_text = topic_text[3:].strip()
+        if topic_text.startswith("<"):
+            topic_text = topic_text.split(">", 1)[-1].strip()
         USER_DATA["topic"] = topic_text
         USER_DATA["date"] = today
         save_user_data()
@@ -87,17 +96,24 @@ async def choose_and_send_daily_topic(context: ContextTypes.DEFAULT_TYPE):
 # -------------------- COMMANDS --------------------
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
-        "안녕하세요! 👋 저는 한국어 회화 선생님이에요.\n"
-        "매일 아침 새로운 주제를 AI가 정하고 대화를 시작할게요.\n"
-        "대화 중 모르는 단어나 문법은 편하게 물어보세요. 제가 기록해 둘게요.\n\n"
-        "먼저 /me 를 입력해서 연결해 주세요!"
+        "안녕! 👋 나는 IU야! 너의 한국어 친구이자 선생님이 될게!\n"
+        "매일 재미있는 주제로 대화하고, 한국어 실력을 늘려보자!\n"
+        "틀려도 괜찮아 - 내가 친절하게 도와줄게. 그리고 더 자연스러운 표현도 알려줄게!\n\n"
+        "먼저 /me 를 눌러서 시작해줘!\n\n"
+        "(Hi! 👋 I'm IU! I'll be your Korean friend and teacher!\n"
+        "Let's chat about fun topics every day and improve your Korean!\n"
+        "It's okay to make mistakes - I'll help you kindly and teach you more natural expressions!\n\n"
+        "First, press /me to get started!)"
     )
     await update.message.reply_text(msg)
 
 async def cmd_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global USER_ID
     USER_ID = update.message.chat_id
-    await update.message.reply_text("좋아요! 😊 이제 매일 아침 새로운 대화 주제를 보낼게요.")
+    await update.message.reply_text(
+        "야호! 😊 이제 우리 친구야! 매일 재미있는 주제로 대화해보자!\n\n"
+        "(Yay! 😊 Now we're friends! Let's chat about fun topics every day!)"
+    )
     print(f"✅ USER_ID set to {USER_ID}")
 
 async def cmd_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -107,13 +123,18 @@ async def cmd_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     unsure = USER_DATA.get("unsure", [])
     if not unsure:
-        await update.message.reply_text("오늘 모르는 단어가 없네요! 잘하셨어요 👏")
+        await update.message.reply_text(
+            "오늘 모르는 게 없었네! 정말 잘했어! 👏\n\n"
+            "(You didn't have anything you didn't know today! You did really well! 👏)"
+        )
         return
 
     prompt = (
-        f"You are a Korean tutor. Review these Korean words/phrases the learner was unsure about: {unsure}. "
-        "For each, give the meaning, one Korean example sentence + short English gloss, and one brief grammar tip if relevant. "
-        "Then make a short quiz (2–3 questions) for recall."
+        f"You are IU, a friendly Korean tutor. Review these Korean words/phrases the learner was unsure about: {unsure}. "
+        "Use only modern, commonly used Korean words in your explanations. "
+        "For each unclear item, give the meaning, one simple Korean example sentence, and brief grammar tip if helpful. "
+        "Then make a short, fun quiz (2–3 questions) for practice. "
+        "Be encouraging and friendly like a best friend. End with English translation in parentheses."
     )
     try:
         completion = client.chat.completions.create(
@@ -126,10 +147,17 @@ async def cmd_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
             max_tokens=450
         )
         review = completion.choices[0].message.content.strip()
+        
+        # Clean up any unwanted prefixes
+        if review.startswith("<s>"):
+            review = review[3:].strip()
+        if review.startswith("<"):
+            review = review.split(">", 1)[-1].strip()
+            
     except Exception as e:
-        review = f"⚠️ 복습 중 오류가 발생했어요: {e}"
+        review = f"앗, 복습하려다가 문제가 생겼어! 나중에 다시 해보자! 😅\n\n(Oops, there was a problem trying to review! Let's try again later! 😅)\n\nError: {e}"
 
-    await update.message.reply_text(f"🧠 오늘의 복습:\n\n{review}")
+    await update.message.reply_text(f"🧠 오늘 공부한 것들 정리해볼까?\n\n{review}")
     USER_DATA["unsure"].clear()
     save_user_data()
 
@@ -160,27 +188,57 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Always be ready to chat - don't rely only on daily topics
     topic = USER_DATA.get("topic") or "자유로운 한국어 대화 (free Korean conversation)"
 
+    # Detect if user is writing in Korean to provide feedback
+    has_korean = any('\u3131' <= char <= '\u3163' or '\uac00' <= char <= '\ud7a3' for char in text)
+    
+    # Check if conversation is getting dry (short responses)
+    is_dry_response = len(text.strip()) <= 10 and not any(k in text for k in ["?", "뭐", "왜", "어떻게", "언제", "어디"])
+
     try:
         print(f"🤖 Making API call to OpenRouter...")
+        
+        # Enhanced system prompt based on context
+        enhanced_prompt = f"""{SYSTEM_PROMPT}
+
+Current conversation context: {topic}
+
+SPECIAL INSTRUCTIONS FOR THIS MESSAGE:
+- User wrote in Korean: {has_korean}
+- Response seems dry/short: {is_dry_response}
+- If user wrote Korean, provide specific feedback on their grammar/vocabulary and suggest improvements
+- If response is dry, ask engaging follow-up questions or bring up related fun topics
+- Use only modern, everyday Korean words that people actually use in 2024
+- Be like their supportive best friend - enthusiastic and caring
+- NEVER start with <s> or any tokens - respond naturally
+- Always end with English translation in parentheses
+"""
+
         completion = client.chat.completions.create(
             model="mistralai/mistral-7b-instruct",
             messages=[
-                {"role": "system", "content": f"{SYSTEM_PROMPT}\n\nContext: {topic}\n\nYou should always respond helpfully to the user's Korean practice, whether they're asking questions, practicing conversation, or need help with vocabulary/grammar."},
+                {"role": "system", "content": enhanced_prompt},
                 {"role": "user", "content": text}
             ],
             temperature=0.8,
-            max_tokens=280
+            max_tokens=350
         )
         reply = completion.choices[0].message.content.strip()
         print(f"✅ API response received: {reply[:50]}...")
         
+        # Clean up any unwanted prefixes
+        if reply.startswith("<s>"):
+            reply = reply[3:].strip()
+        if reply.startswith("<"):
+            # Remove any other XML-like tags at the start
+            reply = reply.split(">", 1)[-1].strip()
+        
         # Fallback if API returns empty response
         if not reply:
-            reply = "죄송해요, 다시 말씀해 주세요. (Sorry, please say that again.)"
+            reply = "어? 뭔가 이상해! 다시 말해줘! 😅\n\n(Huh? Something's weird! Tell me again! 😅)"
             
     except Exception as e:
         print(f"❌ API Error: {e}")
-        reply = f"죄송해요, 지금 문제가 있어요. 다시 시도해 주세요. 😅\n(Sorry, there's an issue right now. Please try again.)\n\nError: {str(e)}"
+        reply = f"앗, 뭔가 문제가 생겼어! 잠깐 후에 다시 말해줘! 😅\n\n(Oops, something went wrong! Tell me again in a bit! 😅)\n\nError: {str(e)}"
 
     await update.message.reply_text(reply)
 
@@ -204,7 +262,7 @@ def run_bot_main_thread():
     # First run after 10 seconds so you can test quickly, then repeat daily.
     app.job_queue.run_repeating(choose_and_send_daily_topic, interval=24*60*60, first=10)
 
-    print("🤖 Korean AI Tutor started (main thread, JobQueue scheduler).")
+    print("🎤 IU Korean Tutor started! Ready to be your Korean best friend and teacher!")
     # IMPORTANT: Keep signals disabled on Render if you ever move this to a thread.
     # In main thread, default is fine; still safe to pass stop_signals=None.
     app.run_polling(stop_signals=None)
@@ -214,7 +272,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route("/")
 def home():
-    return "Korean Tutor Bot is running (OpenRouter, dynamic topics + review)."
+    return "IU Korean Tutor Bot is running! Your friendly Korean learning companion 🎤"
 
 def run_flask_background():
     port = int(os.environ.get("PORT", 10000))
@@ -223,7 +281,7 @@ def run_flask_background():
 
 # -------------------- ENTRYPOINT --------------------
 if __name__ == "__main__":
-    print("🚀 Starting Korean Tutor Bot...")
+    print("🚀 Starting IU Korean Tutor Bot - Your friendly Korean learning companion!")
     print(f"📝 Environment check - TELEGRAM_TOKEN: {'✅ Set' if TELEGRAM_TOKEN else '❌ Missing'}")
     print(f"📝 Environment check - OPENROUTER_API_KEY: {'✅ Set' if OPENROUTER_API_KEY else '❌ Missing'}")
     print(f"📝 Environment check - PORT: {os.environ.get('PORT', '10000 (default)')}")
@@ -234,7 +292,7 @@ if __name__ == "__main__":
         threading.Thread(target=run_flask_background, daemon=True).start()
 
         # 2) Run Telegram bot in the MAIN thread (no signal errors)
-        print("🤖 Starting Telegram bot in main thread...")
+        print("🎤 Starting IU Telegram bot in main thread...")
         run_bot_main_thread()
     except Exception as e:
         print(f"❌ Critical startup error: {e}")
