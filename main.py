@@ -1,4 +1,4 @@
-import os, asyncio, random, datetime
+import os, asyncio, datetime, json
 from threading import Thread
 from flask import Flask
 from telegram import Update
@@ -6,58 +6,63 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 from apscheduler.schedulers.background import BackgroundScheduler
 from openai import OpenAI
 
-# --- Configuration ---
+# --- Config ---
 TELEGRAM_TOKEN = os.getenv("TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 client = OpenAI(api_key=OPENROUTER_API_KEY, base_url="https://openrouter.ai/api/v1")
 
 USER_ID = None
-DAILY_TOPIC = {"date": None, "topic": None}
+DATA_FILE = "user_vocab.json"
+
+# Load or initialize vocabulary memory
+if os.path.exists(DATA_FILE):
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
+        USER_DATA = json.load(f)
+else:
+    USER_DATA = {"known": [], "unsure": [], "topic": None, "date": None}
 
 SYSTEM_PROMPT = (
-    "You are a friendly and encouraging Korean language tutor. "
-    "Each morning, you choose a random, practical daily conversation topic "
-    "(like travel, weather, family, shopping, emotions, etc.) "
-    "and start a short dialogue in Korean with the student. "
-    "When replying, speak naturally in Korean, correct mistakes gently, "
-    "and ask follow-up questions to keep the conversation going."
+    "You are a kind, encouraging Korean tutor who speaks mostly in Korean. "
+    "Keep replies short (2–4 sentences). If the user makes a mistake, correct it gently, "
+    "give one improved example, and explain the grammar briefly only if relevant. "
+    "Avoid using romanization unless the learner asks."
 )
 
-# --- Generate a new topic every morning ---
+# --- Generate AI Topic Daily ---
 async def generate_daily_topic(context: ContextTypes.DEFAULT_TYPE):
-    global DAILY_TOPIC, USER_ID
+    global USER_DATA, USER_ID
+    today = str(datetime.date.today())
     if not USER_ID:
-        print("❗ USER_ID not set yet. Use /me in Telegram.")
+        print("❗ USER_ID not set. Use /me in Telegram first.")
+        return
+    if USER_DATA.get("date") == today:
         return
 
-    today = datetime.date.today()
-    if DAILY_TOPIC["date"] == today:
-        return  # Already generated today
+    completion = client.chat.completions.create(
+        model="mistralai/mistral-7b-instruct",
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": "Choose a natural Korean conversation topic for today (e.g. weather, travel, shopping, feelings). Start the conversation in Korean."}
+        ],
+        max_tokens=150, temperature=0.9,
+    )
+    topic = completion.choices[0].message.content.strip()
+    USER_DATA.update({"topic": topic, "date": today})
+    save_user_data()
+    await context.bot.send_message(chat_id=USER_ID, text=f"🌅 오늘의 대화 주제:\n\n{topic}")
 
-    try:
-        completion = client.chat.completions.create(
-            model="mistralai/mistral-7b-instruct",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": "Please choose a new Korean daily conversation topic for today and start the conversation in Korean."}
-            ],
-            temperature=0.9,
-            max_tokens=180
-        )
-        ai_message = completion.choices[0].message.content.strip()
-        DAILY_TOPIC = {"date": today, "topic": ai_message}
-        await context.bot.send_message(chat_id=USER_ID, text=f"🌅 오늘의 대화 주제:\n\n{ai_message}")
-        print(f"✅ New daily topic: {ai_message[:50]}...")
-    except Exception as e:
-        print(f"Error generating daily topic: {e}")
+def save_user_data():
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(USER_DATA, f, ensure_ascii=False, indent=2)
 
-# --- Telegram Commands ---
+# --- Commands ---
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
-        "안녕하세요! 👋 저는 당신의 한국어 회화 선생님이에요.\n"
-        "매일 아침 새로운 주제를 직접 정해서 한국어로 대화를 시작할게요.\n\n"
-        "먼저 /me 로 저에게 인사해주세요!"
+        "안녕하세요! 👋 저는 한국어 회화 선생님이에요.\n"
+        "매일 아침 새로운 주제를 직접 정하고 대화를 시작할게요.\n"
+        "대화 중 모르는 단어나 문법은 물어보세요. 제가 기록해 둘게요.\n\n"
+        "먼저 /me 를 입력해서 연결해 주세요!"
     )
     await update.message.reply_text(msg)
 
@@ -67,160 +72,67 @@ async def cmd_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("좋아요! 😊 이제 매일 아침 새로운 대화 주제를 보낼게요.")
     print(f"✅ USER_ID set to {USER_ID}")
 
-# --- Chat Handler (AI replies naturally around the current topic) ---
+# --- Conversation Handling ---
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_input = update.message.text.strip()
+    global USER_DATA
+    text = update.message.text.strip()
 
-    today = datetime.date.today()
-    topic_text = DAILY_TOPIC["topic"] if DAILY_TOPIC["date"] == today else "일상적인 대화 (daily life conversation)"
+    # Detect uncertain vocabulary
+    if any(phrase in text for phrase in ["?", "뜻", "몰라", "모르", "what", "meaning"]):
+        USER_DATA["unsure"].append(text)
+        save_user_data()
 
-    try:
-        completion = client.chat.completions.create(
-            model="mistralai/mistral-7b-instruct",
-            messages=[
-                {"role": "system", "content": f"{SYSTEM_PROMPT}\nToday's topic: {topic_text}"},
-                {"role": "user", "content": user_input}
-            ],
-            temperature=0.8,
-            max_tokens=250,
-        )
-        reply = completion.choices[0].message.content.strip()
-    except Exception as e:
-        reply = f"⚠️ 오류가 발생했어요: {e}"
+    topic = USER_DATA.get("topic") or "일상적인 대화"
 
+    completion = client.chat.completions.create(
+        model="mistralai/mistral-7b-instruct",
+        messages=[
+            {"role": "system", "content": f"{SYSTEM_PROMPT}\nToday's topic: {topic}"},
+            {"role": "user", "content": text}
+        ],
+        max_tokens=250, temperature=0.8,
+    )
+    reply = completion.choices[0].message.content.strip()
     await update.message.reply_text(reply)
 
-# --- Scheduler & App Runner ---
-async def main():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("me", cmd_me))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(lambda: asyncio.create_task(generate_daily_topic(app.bot)), "interval", hours=24)
-    scheduler.start()
-
-    print("🤖 AI Korean Tutor (Dynamic Topics via OpenRouter) started.")
-    await app.run_polling()
-
-# --- Keep-alive Flask for Render ---
-flask_app = Flask(__name__)
-
-@flask_app.route("/")
-def home():
-    return "Korean AI Tutor Bot is running (OpenRouter, dynamic topics)."
-
-def run_flask():
-    flask_app.run(host="0.0.0.0", port=8080)
-
-if __name__ == "__main__":
-    Thread(target=run_flask).start()
-    asyncio.run(main())
-import os, asyncio, random, datetime
-from threading import Thread
-from flask import Flask
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-from apscheduler.schedulers.background import BackgroundScheduler
-from openai import OpenAI
-
-# --- Configuration ---
-TELEGRAM_TOKEN = os.getenv("TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-
-client = OpenAI(api_key=OPENROUTER_API_KEY, base_url="https://openrouter.ai/api/v1")
-
-USER_ID = None
-DAILY_TOPIC = {"date": None, "topic": None}
-
-SYSTEM_PROMPT = (
-    "You are a friendly and encouraging Korean language tutor. "
-    "Each morning, you choose a random, practical daily conversation topic "
-    "(like travel, weather, family, shopping, emotions, etc.) "
-    "and start a short dialogue in Korean with the student. "
-    "When replying, speak naturally in Korean, correct mistakes gently, "
-    "and ask follow-up questions to keep the conversation going."
-)
-
-# --- Generate a new topic every morning ---
-async def generate_daily_topic(context: ContextTypes.DEFAULT_TYPE):
-    global DAILY_TOPIC, USER_ID
-    if not USER_ID:
-        print("❗ USER_ID not set yet. Use /me in Telegram.")
+# --- Review Session (/finish) ---
+async def cmd_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global USER_DATA
+    unsure = USER_DATA.get("unsure", [])
+    if not unsure:
+        await update.message.reply_text("오늘 모르는 단어가 없네요! 잘하셨어요 👏")
         return
 
-    today = datetime.date.today()
-    if DAILY_TOPIC["date"] == today:
-        return  # Already generated today
-
-    try:
-        completion = client.chat.completions.create(
-            model="mistralai/mistral-7b-instruct",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": "Please choose a new Korean daily conversation topic for today and start the conversation in Korean."}
-            ],
-            temperature=0.9,
-            max_tokens=180
-        )
-        ai_message = completion.choices[0].message.content.strip()
-        DAILY_TOPIC = {"date": today, "topic": ai_message}
-        await context.bot.send_message(chat_id=USER_ID, text=f"🌅 오늘의 대화 주제:\n\n{ai_message}")
-        print(f"✅ New daily topic: {ai_message[:50]}...")
-    except Exception as e:
-        print(f"Error generating daily topic: {e}")
-
-# --- Telegram Commands ---
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = (
-        "안녕하세요! 👋 저는 당신의 한국어 회화 선생님이에요.\n"
-        "매일 아침 새로운 주제를 직접 정해서 한국어로 대화를 시작할게요.\n\n"
-        "먼저 /me 로 저에게 인사해주세요!"
+    prompt = (
+        f"You are a Korean tutor. Review these Korean words or phrases the student was unsure about: {unsure}. "
+        "For each, explain its meaning, show one example sentence in Korean with English meaning, "
+        "and if possible, briefly mention one grammar tip related to it. "
+        "Then make a short quiz with fill-in-the-blank or translation questions to test recall."
     )
-    await update.message.reply_text(msg)
+    completion = client.chat.completions.create(
+        model="mistralai/mistral-7b-instruct",
+        messages=[{"role": "system", "content": SYSTEM_PROMPT},
+                  {"role": "user", "content": prompt}],
+        max_tokens=400, temperature=0.7,
+    )
+    review = completion.choices[0].message.content.strip()
+    await update.message.reply_text(f"🧠 오늘의 복습:\n\n{review}")
+    USER_DATA["unsure"].clear()
+    save_user_data()
 
-async def cmd_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global USER_ID
-    USER_ID = update.message.chat_id
-    await update.message.reply_text("좋아요! 😊 이제 매일 아침 새로운 대화 주제를 보낼게요.")
-    print(f"✅ USER_ID set to {USER_ID}")
-
-# --- Chat Handler (AI replies naturally around the current topic) ---
-async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_input = update.message.text.strip()
-
-    today = datetime.date.today()
-    topic_text = DAILY_TOPIC["topic"] if DAILY_TOPIC["date"] == today else "일상적인 대화 (daily life conversation)"
-
-    try:
-        completion = client.chat.completions.create(
-            model="mistralai/mistral-7b-instruct",
-            messages=[
-                {"role": "system", "content": f"{SYSTEM_PROMPT}\nToday's topic: {topic_text}"},
-                {"role": "user", "content": user_input}
-            ],
-            temperature=0.8,
-            max_tokens=250,
-        )
-        reply = completion.choices[0].message.content.strip()
-    except Exception as e:
-        reply = f"⚠️ 오류가 발생했어요: {e}"
-
-    await update.message.reply_text(reply)
-
-# --- Scheduler & App Runner ---
+# --- Scheduler & Startup ---
 async def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("me", cmd_me))
+    app.add_handler(CommandHandler("finish", cmd_finish))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
     scheduler = BackgroundScheduler()
     scheduler.add_job(lambda: asyncio.create_task(generate_daily_topic(app.bot)), "interval", hours=24)
     scheduler.start()
 
-    print("🤖 AI Korean Tutor (Dynamic Topics via OpenRouter) started.")
+    print("🤖 Korean AI Tutor (Dynamic Topics + Review System) started.")
     await app.run_polling()
 
 # --- Keep-alive Flask for Render ---
@@ -228,7 +140,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route("/")
 def home():
-    return "Korean AI Tutor Bot is running (OpenRouter, dynamic topics)."
+    return "Korean Tutor Bot (AI dynamic topics + review memory) running!"
 
 def run_flask():
     flask_app.run(host="0.0.0.0", port=8080)
