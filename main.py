@@ -33,16 +33,11 @@ else:
     USER_DATA = {"known": [], "unsure": [], "topic": None, "date": None}
 
 SYSTEM_PROMPT = (
-    "You are IU, a friendly Korean best friend and tutor who helps with Korean practice in a warm, engaging way. "
-    "Always respond enthusiastically to the user's messages and try to keep conversations going even if they're being short or dry. "
-    "Use ONLY modern, commonly used Korean words - avoid archaic or overly formal language. "
-    "IMPORTANT FORMATTING RULES:\n"
-    "1. NEVER start responses with <s> or any special tokens - just respond naturally\n"
-    "2. Always provide English translation at the bottom of each response in parentheses\n"
-    "3. When the user writes in Korean, give specific feedback on grammar, structure, or suggest better vocabulary\n"
-    "4. Act like their supportive best friend while teaching - be encouraging and conversational\n"
-    "5. If conversation seems to be dying, ask engaging questions or bring up relatable topics\n"
-    "Keep responses 2-4 sentences in Korean, then English translation in parentheses."
+    "You are IU, a friendly Korean best friend and tutor. Keep responses SHORT and natural - just 1-2 sentences in Korean, then English translation in parentheses. "
+    "Use only modern, everyday Korean words. Be encouraging but concise. "
+    "If user writes Korean, give ONE brief tip about their grammar/vocabulary, then continue the conversation naturally. "
+    "Never repeat yourself or give multiple explanations for the same thing. "
+    "Never start with <s> or special tokens."
 )
 
 def save_user_data():
@@ -69,10 +64,10 @@ async def choose_and_send_daily_topic(context: ContextTypes.DEFAULT_TYPE):
             model="mistralai/mistral-7b-instruct",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": "Choose a fun, relatable Korean conversation topic for today and start the conversation enthusiastically like a best friend would. Use only modern, everyday Korean words. End with English translation in parentheses. Don't start with <s> or any special tokens."}
+                {"role": "user", "content": "Start a short, fun conversation topic in Korean (1-2 sentences max) with English translation. Be enthusiastic but brief!"}
             ],
-            temperature=0.9,
-            max_tokens=200
+            temperature=0.8,
+            max_tokens=120
         )
         topic_text = completion.choices[0].message.content.strip()
         
@@ -188,30 +183,23 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Always be ready to chat - don't rely only on daily topics
     topic = USER_DATA.get("topic") or "자유로운 한국어 대화 (free Korean conversation)"
 
-    # Detect if user is writing in Korean to provide feedback
-    has_korean = any('\u3131' <= char <= '\u3163' or '\uac00' <= char <= '\ud7a3' for char in text)
+    # Detect if user is writing in Korean (only if substantial Korean content)
+    korean_chars = sum(1 for char in text if '\uac00' <= char <= '\ud7a3')
+    has_korean = korean_chars >= 2  # Need at least 2 Korean characters to count
     
     # Check if conversation is getting dry (short responses)
-    is_dry_response = len(text.strip()) <= 10 and not any(k in text for k in ["?", "뭐", "왜", "어떻게", "언제", "어디"])
+    is_dry_response = len(text.strip()) <= 15 and not any(k in text.lower() for k in ["?", "뭐", "왜", "어떻게", "언제", "어디", "what", "how", "why"])
 
     try:
         print(f"🤖 Making API call to OpenRouter...")
         
-        # Enhanced system prompt based on context
-        enhanced_prompt = f"""{SYSTEM_PROMPT}
-
-Current conversation context: {topic}
-
-SPECIAL INSTRUCTIONS FOR THIS MESSAGE:
-- User wrote in Korean: {has_korean}
-- Response seems dry/short: {is_dry_response}
-- If user wrote Korean, provide specific feedback on their grammar/vocabulary and suggest improvements
-- If response is dry, ask engaging follow-up questions or bring up related fun topics
-- Use only modern, everyday Korean words that people actually use in 2024
-- Be like their supportive best friend - enthusiastic and caring
-- NEVER start with <s> or any tokens - respond naturally
-- Always end with English translation in parentheses
-"""
+        # Simple, focused prompt to avoid repetition
+        if has_korean:
+            enhanced_prompt = f"{SYSTEM_PROMPT}\n\nUser wrote in Korean. Give ONE quick tip about their Korean, then respond naturally to continue the conversation. Keep it short - max 2 sentences + English translation."
+        elif is_dry_response:
+            enhanced_prompt = f"{SYSTEM_PROMPT}\n\nUser seems quiet. Ask ONE engaging question to keep the conversation going. Keep it short and friendly."
+        else:
+            enhanced_prompt = f"{SYSTEM_PROMPT}\n\nRespond naturally to continue the conversation. Keep it short and friendly."
 
         completion = client.chat.completions.create(
             model="mistralai/mistral-7b-instruct",
@@ -219,21 +207,31 @@ SPECIAL INSTRUCTIONS FOR THIS MESSAGE:
                 {"role": "system", "content": enhanced_prompt},
                 {"role": "user", "content": text}
             ],
-            temperature=0.8,
-            max_tokens=350
+            temperature=0.7,
+            max_tokens=150
         )
         reply = completion.choices[0].message.content.strip()
         print(f"✅ API response received: {reply[:50]}...")
         
-        # Clean up any unwanted prefixes
+        # Clean up any unwanted prefixes and repetitions
         if reply.startswith("<s>"):
             reply = reply[3:].strip()
         if reply.startswith("<"):
-            # Remove any other XML-like tags at the start
             reply = reply.split(">", 1)[-1].strip()
         
+        # Remove duplicate lines that often cause repetition
+        lines = reply.split('\n')
+        clean_lines = []
+        seen_lines = set()
+        for line in lines:
+            line_clean = line.strip()
+            if line_clean and line_clean not in seen_lines:
+                clean_lines.append(line)
+                seen_lines.add(line_clean)
+        reply = '\n'.join(clean_lines)
+        
         # Fallback if API returns empty response
-        if not reply:
+        if not reply or len(reply.strip()) == 0:
             reply = "어? 뭔가 이상해! 다시 말해줘! 😅\n\n(Huh? Something's weird! Tell me again! 😅)"
             
     except Exception as e:
