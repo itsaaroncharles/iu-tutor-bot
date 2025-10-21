@@ -145,7 +145,7 @@ def run_bot():
         scheduler.start()
 
         print("🤖 Korean AI Tutor started successfully.")
-        await app.run_polling()
+        await app.run_polling(stop_signals=None)
 
     asyncio.run(_main())
 
