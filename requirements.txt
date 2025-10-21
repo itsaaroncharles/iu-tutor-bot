@@ -1,4 +1,3 @@
-python-telegram-bot==20.3
-apscheduler
+python-telegram-bot[job-queue]==20.3
 flask
 openai>=1.40.0
