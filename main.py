@@ -200,12 +200,25 @@ def home():
 def run_flask_background():
     port = int(os.environ.get("PORT", 10000))
     # threaded=True keeps it lightweight while the bot runs in the main thread
-    flask_app.run(host="0.0.0.0", port=port, threaded=True)
+    flask_app.run(host="0.0.0.0", port=port, threaded=True, debug=False, use_reloader=False)
 
 # -------------------- ENTRYPOINT --------------------
 if __name__ == "__main__":
-    # 1) Start Flask in a background thread (to keep Render 'web service' alive)
-    threading.Thread(target=run_flask_background, daemon=True).start()
+    print("🚀 Starting Korean Tutor Bot...")
+    print(f"📝 Environment check - TELEGRAM_TOKEN: {'✅ Set' if TELEGRAM_TOKEN else '❌ Missing'}")
+    print(f"📝 Environment check - OPENROUTER_API_KEY: {'✅ Set' if OPENROUTER_API_KEY else '❌ Missing'}")
+    print(f"📝 Environment check - PORT: {os.environ.get('PORT', '10000 (default)')}")
+    
+    try:
+        # 1) Start Flask in a background thread (to keep Render 'web service' alive)
+        print("🌐 Starting Flask server in background thread...")
+        threading.Thread(target=run_flask_background, daemon=True).start()
 
-    # 2) Run Telegram bot in the MAIN thread (no signal errors)
-    run_bot_main_thread()
+        # 2) Run Telegram bot in the MAIN thread (no signal errors)
+        print("🤖 Starting Telegram bot in main thread...")
+        run_bot_main_thread()
+    except Exception as e:
+        print(f"❌ Critical startup error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
