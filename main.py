@@ -33,10 +33,13 @@ else:
     USER_DATA = {"known": [], "unsure": [], "topic": None, "date": None}
 
 SYSTEM_PROMPT = (
-    "You are a kind, encouraging Korean tutor who speaks mostly in Korean. "
+    "You are a kind, encouraging Korean tutor who is available 24/7 to help with Korean practice. "
+    "Always respond to the user's messages - whether they're practicing conversation, asking questions, "
+    "or need help with vocabulary/grammar. Speak mostly in Korean but use English when explaining complex grammar. "
     "Keep replies short (2–4 sentences). If the learner makes a mistake, correct it gently, "
     "give one improved example, and briefly explain the grammar only if helpful. "
-    "Avoid romanization unless requested. Encourage natural, simple Korean."
+    "Avoid romanization unless requested. Encourage natural, simple Korean conversation. "
+    "Be conversational and engaging - respond to any topic they bring up."
 )
 
 def save_user_data():
@@ -141,27 +144,43 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # -------------------- CHAT HANDLER --------------------
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
+    
+    # Don't respond to empty messages
+    if not text:
+        return
+
+    print(f"💬 Received message: {text}")  # Debug logging
 
     # Heuristic: learner uncertainty markers -> store the raw text they asked about
     if any(k in text for k in ["?", "뜻", "몰라", "모르", "what", "meaning"]):
         USER_DATA["unsure"].append(text)
         save_user_data()
+        print(f"📝 Added to unsure list: {text}")
 
-    topic = USER_DATA.get("topic") or "일상적인 대화"
+    # Always be ready to chat - don't rely only on daily topics
+    topic = USER_DATA.get("topic") or "자유로운 한국어 대화 (free Korean conversation)"
 
     try:
+        print(f"🤖 Making API call to OpenRouter...")
         completion = client.chat.completions.create(
             model="mistralai/mistral-7b-instruct",
             messages=[
-                {"role": "system", "content": f"{SYSTEM_PROMPT}\nToday's topic:\n{topic}"},
+                {"role": "system", "content": f"{SYSTEM_PROMPT}\n\nContext: {topic}\n\nYou should always respond helpfully to the user's Korean practice, whether they're asking questions, practicing conversation, or need help with vocabulary/grammar."},
                 {"role": "user", "content": text}
             ],
             temperature=0.8,
             max_tokens=280
         )
         reply = completion.choices[0].message.content.strip()
+        print(f"✅ API response received: {reply[:50]}...")
+        
+        # Fallback if API returns empty response
+        if not reply:
+            reply = "죄송해요, 다시 말씀해 주세요. (Sorry, please say that again.)"
+            
     except Exception as e:
-        reply = f"⚠️ 오류가 발생했어요: {e}"
+        print(f"❌ API Error: {e}")
+        reply = f"죄송해요, 지금 문제가 있어요. 다시 시도해 주세요. 😅\n(Sorry, there's an issue right now. Please try again.)\n\nError: {str(e)}"
 
     await update.message.reply_text(reply)
 
