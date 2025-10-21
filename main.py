@@ -1,73 +1,107 @@
+import os, asyncio, random
+from threading import Thread
+from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from apscheduler.schedulers.background import BackgroundScheduler
-import random, asyncio, os
-from flask import Flask
-from threading import Thread
+from openai import OpenAI
 
-TOKEN = os.getenv("TOKEN")
+# --- Configuration ---
+TELEGRAM_TOKEN = os.getenv("TOKEN")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+
+client = OpenAI(
+    api_key=OPENROUTER_API_KEY,
+    base_url="https://openrouter.ai/api/v1"
+)
+
 USER_ID = None
 
-topics = {
-    "방 (room)": ["의자 (chair)", "책상 (desk)", "문 (door)", "창문 (window)"],
-    "카페 (cafe)": ["커피 (coffee)", "빵 (bread)", "메뉴판 (menu)", "점원 (staff)"],
-    "공항 (airport)": ["비행기 (airplane)", "표 (ticket)", "짐 (luggage)", "여권 (passport)"]
-}
+DAILY_TOPICS = [
+    "카페에서 주문하기 (Ordering at a café)",
+    "공항에서 체크인하기 (Airport check-in)",
+    "방 안의 물건 묘사하기 (Describing things in a room)",
+    "식당에서 주문하기 (Ordering at a restaurant)",
+    "길 묻기 (Asking for directions)",
+    "기분 표현하기 (Expressing feelings)"
+]
 
+SYSTEM_PROMPT = (
+    "You are a friendly Korean language tutor. "
+    "Speak mostly in Korean, using short sentences. "
+    "If the user makes a grammar mistake, gently correct it and show one improved sentence. "
+    "Then ask a small follow-up question to continue the dialogue. "
+    "Keep replies natural and encouraging."
+)
+
+# --- Daily topic broadcast ---
 async def send_daily_topic(context: ContextTypes.DEFAULT_TYPE):
     global USER_ID
-    if USER_ID is None:
-        print("❗ USER_ID not set yet. Use /me to set it.")
+    if not USER_ID:
+        print("USER_ID not set yet. Use /me to link Telegram user.")
         return
-    topic, words = random.choice(list(topics.items()))
-    vocab = ", ".join(words)
-    msg = f"📚 오늘의 주제: {topic}\n단어들: {vocab}\n\n이 단어로 문장 만들어볼까요?"
-    await context.bot.send_message(chat_id=USER_ID, text=msg)
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "안녕하세요! 👋 저는 당신의 한국어 연습 파트너예요.\n"
-        "매일 하나의 주제로 대화해요.\n\n"
-        "먼저 /me 를 눌러 나에게 인사해주세요!"
+    topic = random.choice(DAILY_TOPICS)
+    await context.bot.send_message(
+        chat_id=USER_ID,
+        text=f"📚 오늘의 주제: {topic}\n\n이 주제로 대화해 봐요! 먼저 한 문장으로 시작해 보세요."
     )
 
-async def set_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- Commands ---
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = (
+        "안녕하세요! 👋 저는 한국어 회화 선생님이에요.\n"
+        "매일 간단한 주제를 보내드릴게요. 자유롭게 한국어로 대화하면 제가 자연스럽게 도와드릴게요.\n\n"
+        "먼저 /me 로 내 계정을 연결해주세요!"
+    )
+    await update.message.reply_text(msg)
+
+async def cmd_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global USER_ID
     USER_ID = update.message.chat_id
-    await update.message.reply_text("좋아요! 이제 매일 주제를 보낼게요 😊")
+    await update.message.reply_text("좋아요! 이제 매일 한국어 대화 주제를 보낼게요 😊")
     print(f"✅ USER_ID set to: {USER_ID}")
 
+# --- Main chat handler (AI-driven) ---
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    responses = [
-        "좋아요! 다른 단어로 문장 만들어볼까요?",
-        "멋져요! 조금 더 길게 말해보세요!",
-        "잘했어요 👏 다음엔 카페에 있는 물건으로 해볼까요?",
-        "훌륭해요! 발음 연습도 잊지 마세요 ☺️"
-    ]
-    await update.message.reply_text(random.choice(responses))
+    user_input = update.message.text.strip()
+    try:
+        completion = client.chat.completions.create(
+            model="mistralai/mistral-7b-instruct",  # free, good Korean support
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_input}
+            ],
+            max_tokens=250,
+            temperature=0.8,
+        )
+        reply = completion.choices[0].message.content.strip()
+    except Exception as e:
+        reply = f"⚠️ 오류가 발생했어요: {e}"
+    await update.message.reply_text(reply)
 
+# --- Scheduler + Telegram setup ---
 async def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("me", set_me))
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("me", cmd_me))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
     scheduler = BackgroundScheduler()
     scheduler.add_job(lambda: asyncio.create_task(send_daily_topic(app.bot)), "interval", hours=24)
     scheduler.start()
 
-    print("🤖 Bot started!")
+    print("🤖 Korean AI Tutor Bot started (OpenRouter)")
     await app.run_polling()
 
-# Keep-alive web server (Render requirement)
-app_flask = Flask(__name__)
+# --- Keep-alive Flask server for Render ---
+flask_app = Flask(__name__)
 
-@app_flask.route('/')
+@flask_app.route("/")
 def home():
-    return "Bot is running!"
+    return "Korean Tutor Bot is running (OpenRouter)."
 
 def run_flask():
-    app_flask.run(host='0.0.0.0', port=8080)
+    flask_app.run(host="0.0.0.0", port=8080)
 
 if __name__ == "__main__":
     Thread(target=run_flask).start()
